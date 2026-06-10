@@ -4206,6 +4206,11 @@ var FB_APP = firebase.initializeApp({
 });
 var FB_AUTH = firebase.auth();
 var USUARIO_ATUAL = null; // {uid, email, nome}
+var FB_AUTH_TOKEN = '';
+firebase.auth().onIdTokenChanged(function(user) {
+  if (user) user.getIdToken().then(function(t) { FB_AUTH_TOKEN = t; });
+  else FB_AUTH_TOKEN = '';
+});
 
 var NOMES_USUARIOS = {
   'henrique@sabagram.com.br': 'Henrique',
@@ -4276,9 +4281,9 @@ FB_AUTH.onAuthStateChanged(function(user) {
 });
 
 window.addEventListener('beforeunload', function() {
-  if (!FB_READY || BLOCOS.length === 0) return;
+  if (!FB_READY || BLOCOS.length === 0 || !FB_AUTH_TOKEN) return;
   var ts = Date.now();
-  fetch('https://pcp-sabagram-default-rtdb.firebaseio.com/pcp.json', {
+  fetch('https://pcp-sabagram-default-rtdb.firebaseio.com/pcp.json?auth=' + FB_AUTH_TOKEN, {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({blocos: BLOCOS, config: CONFIG, estoque: ESTOQUE, compras: COMPRAS, serrada: FILA_SERRADA, historico: HISTORICO, filaOrdem: FILA_ORDEM, paradas: PARADAS, ts: ts, _cid: FB_MY_CLIENT_ID, _u: USUARIO_ATUAL ? USUARIO_ATUAL.nome : '?'}),
