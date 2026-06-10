@@ -66,6 +66,7 @@ button:disabled{opacity:.25;cursor:default}
 </div>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
 <script>
 // BLOQUEIO IMEDIATO — nada roda antes do auth resolver
 document.getElementById('root').innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f0efe8;"><div style="text-align:center;color:#6b6a65;"><div style="font-size:32px;margin-bottom:10px;">🏭</div><div style="font-size:14px;font-weight:500;color:#1a1a1a;">PCP Master</div><div style="font-size:11px;margin-top:4px;">Verificando acesso...</div></div></div>';
@@ -4020,10 +4021,13 @@ window.imprimirRelatorio = function(tipo) {
 };
 
 // === FIREBASE — carregamento dinâmico ===
-var FB_URL = "https://pcp-sabagram-default-rtdb.firebaseio.com";
 var FB_READY = false;
 var FB_SAVING = false;
 var FB_DIRTY = false;
+var FB_DB = null;
+var FB_MY_CLIENT_ID = Math.random().toString(36).slice(2);
+var FB_LAST_TS = 0;
+var FB_INIT_DONE = false;
 
 function showToast(msg) {
   var t = document.getElementById('fb-toast');
@@ -4033,27 +4037,24 @@ function showToast(msg) {
 }
 
 function fbSave() {
-  if (!FB_READY) return;
+  if (!FB_READY || !FB_DB) return;
   if (FB_SAVING) { FB_DIRTY = true; return; }
   FB_SAVING = true;
   FB_DIRTY = false;
-  fetch(FB_URL + '/pcp.json', {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({blocos: BLOCOS, config: CONFIG, estoque: ESTOQUE, compras: COMPRAS, serrada: FILA_SERRADA, historico: HISTORICO, filaOrdem: FILA_ORDEM, paradas: PARADAS, ts: Date.now()})
-  }).then(function(r) {
+  var ts = Date.now();
+  FB_LAST_TS = ts;
+  FB_DB.ref('pcp').set({
+    blocos: BLOCOS, config: CONFIG, estoque: ESTOQUE, compras: COMPRAS,
+    serrada: FILA_SERRADA, historico: HISTORICO, filaOrdem: FILA_ORDEM,
+    paradas: PARADAS, ts: ts, _cid: FB_MY_CLIENT_ID,
+    _u: USUARIO_ATUAL ? USUARIO_ATUAL.nome : '?'
+  }).then(function() {
     FB_SAVING = false;
-    if (r.ok) {
-      showToast('💾 Salvo');
-      if (FB_DIRTY) fbSave();
-    } else {
-      showToast('⚠️ Erro ao salvar — tentando novamente...');
-      FB_DIRTY = true;
-      setTimeout(fbSave, 2000);
-    }
+    showToast('💾 Salvo');
+    if (FB_DIRTY) fbSave();
   }).catch(function(e) {
     FB_SAVING = false;
-    showToast('⚠️ Falha de rede — tentando novamente...');
+    showToast('⚠️ Falha ao salvar — tentando novamente...');
     FB_DIRTY = true;
     setTimeout(fbSave, 3000);
   });
@@ -4120,55 +4121,74 @@ document.addEventListener('click', function(e) {
   if (t && t.id === 'btn-fc-men') { S.fcModo = 'mensal'; render(); }
 });
 
+function applyFirebaseData(data) {
+  if (data.blocos) {
+    var bl = Array.isArray(data.blocos) ? data.blocos :
+      Object.keys(data.blocos).sort(function(a,b){return+a-+b;}).map(function(k){return data.blocos[k];});
+    if (bl.length > 0) {
+      BLOCOS = bl.map(function(b) {
+        if (!b) return null;
+        if (!b.seq) b.seq = [];
+        if (b.seq && !Array.isArray(b.seq)) {
+          b.seq = fixArr(b.seq).map(function(s){ if(s&&s.hist&&!Array.isArray(s.hist))s.hist=fixArr(s.hist); return s; });
+        } else if (b.seq) {
+          b.seq.forEach(function(s){ if(s&&s.hist&&!Array.isArray(s.hist))s.hist=fixArr(s.hist); });
+        }
+        return b;
+      }).filter(Boolean);
+    }
+  }
+  if (data.config) {
+    if (data.config.mercados) { CONFIG.mercados = fixArr(data.config.mercados); }
+    if (data.historico) { HISTORICO = fixArr(data.historico); }
+    if (data.filaOrdem) { FILA_ORDEM = data.filaOrdem; }
+    if (data.paradas) { PARADAS = data.paradas; }
+    if (data.config.materiais) { CONFIG.materiais = fixArr(data.config.materiais); CONFIG.materiais.forEach(function(m){ m.eR=fixArr(m.eR); m.eP=fixArr(m.eP); m.eT=fixArr(m.eT||[]); }); }
+    if (data.config.resina) { CONFIG.resina = Object.assign({}, CONFIG.resina, data.config.resina); CONFIG.resina.diasAtivos=fixArr(data.config.resina.diasAtivos); CONFIG.resina.etapas=fixArr(data.config.resina.etapas); }
+    if (data.config.politriz) { CONFIG.politriz = Object.assign({}, CONFIG.politriz, data.config.politriz); CONFIG.politriz.diasAtivos=fixArr(data.config.politriz.diasAtivos); CONFIG.politriz.etapas=fixArr(data.config.politriz.etapas); }
+    if (data.config.tratamento) { CONFIG.tratamento = Object.assign({}, CONFIG.tratamento, data.config.tratamento); CONFIG.tratamento.diasAtivos=fixArr(data.config.tratamento.diasAtivos); CONFIG.tratamento.tanques=fixArr(data.config.tratamento.tanques); }
+  }
+  if(data.estoque){ESTOQUE=Array.isArray(data.estoque)?data.estoque:Object.keys(data.estoque).map(function(k){return data.estoque[k];}).filter(Boolean);}
+  if(data.compras){COMPRAS=Array.isArray(data.compras)?data.compras:Object.keys(data.compras).map(function(k){return data.compras[k];}).filter(Boolean);}
+  if(data.serrada){FILA_SERRADA=Array.isArray(data.serrada)?data.serrada:Object.keys(data.serrada).map(function(k){return data.serrada[k];}).filter(Boolean);}
+}
+
 function initFirebase() {
   var el = document.getElementById('root');
   if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:400px;flex-direction:column;gap:12px;color:#6b6a65;"><div style="font-size:32px">⌛</div><div style="font-size:14px;font-weight:500">Carregando dados...</div></div>';
-  fetch(FB_URL + '/pcp.json')
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
+  FB_INIT_DONE = false;
+  FB_DB = firebase.database();
+  FB_DB.ref('pcp').on('value', function(snapshot) {
+    var data = snapshot.val();
+    if (!FB_INIT_DONE) {
       if (data && !data.error) {
-        if (data.blocos) {
-          var bl = Array.isArray(data.blocos) ? data.blocos :
-            Object.keys(data.blocos).sort(function(a,b){return+a-+b;}).map(function(k){return data.blocos[k];});
-          if (bl.length > 0) {
-            BLOCOS = bl.map(function(b) {
-              if (!b) return null;
-              if (!b.seq) b.seq = [];
-              if (b.seq && !Array.isArray(b.seq)) {
-                b.seq = fixArr(b.seq).map(function(s){ if(s&&s.hist&&!Array.isArray(s.hist))s.hist=fixArr(s.hist); return s; });
-              } else if (b.seq) {
-                b.seq.forEach(function(s){ if(s&&s.hist&&!Array.isArray(s.hist))s.hist=fixArr(s.hist); });
-              }
-              return b;
-            }).filter(Boolean);
-          }
-        }
-        if (data.config) {
-          if (data.config.mercados) { CONFIG.mercados = fixArr(data.config.mercados); }
-          if (data.historico) { HISTORICO = fixArr(data.historico); }
-          if (data.filaOrdem) { FILA_ORDEM = data.filaOrdem; }
-        if (data.paradas) { PARADAS = data.paradas; }
-          if (data.config.materiais) { CONFIG.materiais = fixArr(data.config.materiais); CONFIG.materiais.forEach(function(m){ m.eR=fixArr(m.eR); m.eP=fixArr(m.eP); m.eT=fixArr(m.eT||[]); }); }
-          if (data.config.resina) { CONFIG.resina = Object.assign({}, CONFIG.resina, data.config.resina); CONFIG.resina.diasAtivos=fixArr(data.config.resina.diasAtivos); CONFIG.resina.etapas=fixArr(data.config.resina.etapas); }
-          if (data.config.politriz) { CONFIG.politriz = Object.assign({}, CONFIG.politriz, data.config.politriz); CONFIG.politriz.diasAtivos=fixArr(data.config.politriz.diasAtivos); CONFIG.politriz.etapas=fixArr(data.config.politriz.etapas); }
-          if (data.config.tratamento) { CONFIG.tratamento = Object.assign({}, CONFIG.tratamento, data.config.tratamento); CONFIG.tratamento.diasAtivos=fixArr(data.config.tratamento.diasAtivos); CONFIG.tratamento.tanques=fixArr(data.config.tratamento.tanques); }
-        }
-        if(data.estoque){ESTOQUE=Array.isArray(data.estoque)?data.estoque:Object.keys(data.estoque).map(function(k){return data.estoque[k];}).filter(Boolean);}
-        if(data.compras){COMPRAS=Array.isArray(data.compras)?data.compras:Object.keys(data.compras).map(function(k){return data.compras[k];}).filter(Boolean);}
-        if(data.serrada){FILA_SERRADA=Array.isArray(data.serrada)?data.serrada:Object.keys(data.serrada).map(function(k){return data.serrada[k];}).filter(Boolean);}
+        applyFirebaseData(data);
+        FB_LAST_TS = data.ts || 0;
         showToast('✅ Dados carregados');
       } else {
         showToast('🚀 Inicializando banco...');
         FB_READY = true; fbSave();
       }
-      FB_READY = true; initFilas(); if(_AUTH_READY) render();
-    })
-    .catch(function(e) {
-      console.error('Firebase REST erro:', e);
-      showToast('⚠️ Modo offline — dados não salvos');
-      // FB_READY permanece false: nunca salva no offline para não sobrescrever o banco
-      FB_READY = false; if(_AUTH_READY) render();
-    });
+      FB_READY = true;
+      FB_INIT_DONE = true;
+      initFilas();
+      if (_AUTH_READY) render();
+      return;
+    }
+    if (!data) return;
+    if (data._cid === FB_MY_CLIENT_ID) return;
+    if (data.ts && data.ts <= FB_LAST_TS) return;
+    FB_LAST_TS = data.ts || 0;
+    applyFirebaseData(data);
+    initFilas();
+    render();
+    showToast('📡 Atualizado por ' + (data._u || 'outro usuário'));
+  }, function(e) {
+    console.error('Firebase RTDB erro:', e);
+    showToast('⚠️ Modo offline — dados não salvos');
+    FB_READY = false;
+    if (_AUTH_READY) render();
+  });
 }
 
 // === FIREBASE AUTH ===
@@ -4181,7 +4201,8 @@ function initFirebase() {
 var FB_APP = firebase.initializeApp({
   apiKey: "AIzaSyCqeFTo8zcxgQ80Bji2NJ_Bbut0EPYSC4c",
   authDomain: "pcp-sabagram.firebaseapp.com",
-  projectId: "pcp-sabagram"
+  projectId: "pcp-sabagram",
+  databaseURL: "https://pcp-sabagram-default-rtdb.firebaseio.com"
 });
 var FB_AUTH = firebase.auth();
 var USUARIO_ATUAL = null; // {uid, email, nome}
@@ -4248,16 +4269,19 @@ FB_AUTH.onAuthStateChanged(function(user) {
     USUARIO_ATUAL = null;
     FB_READY = false;
     _AUTH_READY = false;
+    FB_INIT_DONE = false;
+    if (FB_DB) { try { FB_DB.ref('pcp').off(); } catch(e){} FB_DB = null; }
     renderLogin();
   }
 });
 
 window.addEventListener('beforeunload', function() {
   if (!FB_READY || BLOCOS.length === 0) return;
-  fetch(FB_URL + '/pcp.json', {
+  var ts = Date.now();
+  fetch('https://pcp-sabagram-default-rtdb.firebaseio.com/pcp.json', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({blocos: BLOCOS, config: CONFIG, estoque: ESTOQUE, compras: COMPRAS, serrada: FILA_SERRADA, historico: HISTORICO, filaOrdem: FILA_ORDEM, paradas: PARADAS, ts: Date.now()}),
+    body: JSON.stringify({blocos: BLOCOS, config: CONFIG, estoque: ESTOQUE, compras: COMPRAS, serrada: FILA_SERRADA, historico: HISTORICO, filaOrdem: FILA_ORDEM, paradas: PARADAS, ts: ts, _cid: FB_MY_CLIENT_ID, _u: USUARIO_ATUAL ? USUARIO_ATUAL.nome : '?'}),
     keepalive: true
   });
 });
